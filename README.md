@@ -59,6 +59,8 @@ The bubbles therefore always show the final count. Logic's data table and export
 
 During a live capture, pauses in the incoming data can split a long hold into a few results with the same count. The wait before splitting starts at 100 ms and backs off to 2 s while the hold continues.
 
+Some captures give analyzers digital data past their visible end. In one saved by Logic 2.4.46, it continued to about 280 s in a 37.9 s capture; the final result then extends past the end too.
+
 ## Settings
 
 | Setting | Default | Notes |

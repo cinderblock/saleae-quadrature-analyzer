@@ -94,19 +94,33 @@ Each segment also carries **travel**: the cumulative signed count, never reset. 
 - (Carried over) The Linux SDK `libAnalyzer.so` is libc++, so SDK-linked test executables build on Windows/macOS only.
 - (Carried over) Captures loaded through automation are headless. To see bubbles, use `save_capture` with the analyzer, then open the file in the UI with `--loadFile`.
 
+- **The end-of-capture problem (affects both analyzers):**
+  - The SDK never signals the end of a capture; reads past the end block. Logic marks the analyzer done, and finalizes the FrameV2 data table, within milliseconds of that block.
+  - After that, a frame lying entirely before the final progress is dropped from the table. Frames reaching the end make it only by winning the race.
+  - Solution: `IdleFlusher` emits the open span after the worker waits (100 ms, backing off to 2 s; any change resets it). `MoveGrouper::Tick` emits moves as soon as the hold is established, so nothing stale is pending.
+  - The bubbles and legacy export always get the final span; the table sometimes does. Verified in the UI (the 6-moves capture's final "Count 57" bubble runs to the end).
+- **Experiments that did not work (don't retry):**
+  - A 20 ms or 10 ms flush delay: won the race only 1 in 4 times.
+  - Reporting progress only up to the open span's start: no effect.
+  - One `CommitResults` per frame: no effect.
+- **`DoMoreTransitionsExistInCurrentData()` takes about 250 ms whenever the answer is false.** Never call it per chunk. An earlier trace that blamed `WouldAdvancingToAbsPositionCauseTransition` was wrong: the slow call was `DoMore`. Without it, the whole 7.7 s, 250 MS/s capture is traversed in 172 ms.
+- **Logic serves data past the visible end for some captures.** The user's `Session 0.sal` (meta v22, saved by 2.4.46) was read quickly to about 280 s though it ends at 37.9 s (not the glitch filter; tested with it off). The forum captures (v15) end exactly.
+
 ## Progress log
 
 - [x] Downloaded the two real encoder captures from the forum thread.
-- [ ] **Current step:** scaffold (done) → core decoder and unit tests.
-- [ ] SDK glue, settings, results, simulation.
-- [ ] Python reference decode of the forum captures; compare.
-- [ ] Verify in the isolated Logic instance, including a UI screenshot.
-- [ ] README; Linux/WSL check; commits.
-- [ ] Ask the user: publish to GitHub? install into everyday Logic?
+- [x] Core decoder + unit tests (8 cases, 18178 assertions); SDK glue, settings, results, simulation and its SDK-linked test (`bf27691`).
+- [x] Fixed test-instance profile seeding (`078d7cb`; same fix in stepper `bac54b7`).
+- [x] Python reference decode of both forum captures. It matches the C++ replay and Logic's own table exactly: 6-moves final 57 / 25,573 changes; linear final 111,112 / 111,212 changes; 0 errors.
+- [x] End-of-capture handling: `IdleFlusher` + `Tick` + continuation (`4b0fbbb`). Ported to the stepper (`23efce3`, pushed, CI green).
+- [x] Verified in the isolated Logic UI (screenshot `%TEMP%/salre/quad/ui_6moves.png`).
+- [x] README (`43711e5`); Linux/WSL build and tests pass.
+- [ ] **Current step:** ask the user to publish to GitHub (proposed `cinderblock/saleae-quadrature-analyzer`) and to install, which needs their Logic closed. The stepper's installed copy also needs updating to `23efce3`.
 
 ## Open questions for the user
 
-None yet. Publish and install will be asked at the end.
+1. Publish to GitHub as `cinderblock/saleae-quadrature-analyzer` (public)? Recommended.
+2. Install the quadrature analyzer and update the stepper analyzer in your everyday Logic? Both need Logic closed (you close it; then `tools/install.ps1 -Register` in each repo).
 
 ## Things not to do
 
