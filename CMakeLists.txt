@@ -30,6 +30,7 @@ target_include_directories(quadrature_core PUBLIC src/core)
 set_target_properties(quadrature_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(SOURCES
+src/IdleFlusher.h
 src/QuadratureEncoderAnalyzer.cpp
 src/QuadratureEncoderAnalyzer.h
 src/QuadratureEncoderAnalyzerResults.cpp
