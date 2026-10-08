@@ -46,6 +46,9 @@ namespace quadrature
         int64_t delta = 0;  // Count: the change that ended the span. Move: travel over the move
         int direction = 0;  // sign of `delta`
 
+        // Count only: the span continues one that was cut short by Flush() (the count did not change).
+        bool continuation = false;
+
         // Index only: travel since the previous index pulse, when there was one.
         bool has_since_index = false;
         int64_t since_index = 0;
@@ -75,12 +78,24 @@ namespace quadrature
         // to `out`.
         void Update( uint64_t sample, bool a, bool b, bool z, std::vector<Segment>& out );
 
-        // Close the open count span at `end` (end of data).
+        // Close the open count span at `end`, as if the data ended there. Decoding can continue
+        // afterwards; the next span is marked as a continuation.
         void Flush( uint64_t end, std::vector<Segment>& out );
 
         int64_t Count() const
         {
             return mCount;
+        }
+
+        int64_t Travel() const
+        {
+            return mTravel;
+        }
+
+        // Where the span the decoder is in now (not yet emitted) started.
+        uint64_t OpenStart() const
+        {
+            return mOpenStart;
         }
 
         // Gray state index of (A, B): 00 -> 0, 10 -> 1, 11 -> 2, 01 -> 3.
@@ -98,6 +113,7 @@ namespace quadrature
         int64_t mCount = 0;
         int64_t mTravel = 0;
         uint64_t mOpenStart = 0;
+        bool mOpenIsContinuation = false;
 
         bool mHaveIndex = false;
         int64_t mIndexTravel = 0;

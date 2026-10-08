@@ -266,6 +266,75 @@ TEST_CASE( "Index reset restarts the count at each index pulse" )
             CHECK( segment.count == 0 );
 }
 
+TEST_CASE( "A move is emitted once the count has held for the hold time, not when the hold ends" )
+{
+    auto count = []( uint64_t start, uint64_t end, int64_t value )
+    {
+        Segment segment;
+        segment.start = start;
+        segment.end = end;
+        segment.count = value;
+        segment.travel = value;
+        return segment;
+    };
+
+    MoveGrouper grouper( 100 );
+    std::vector<Segment> out;
+    grouper.Add( count( 0, 1000, 0 ), out ); // hold
+    grouper.Add( count( 1000, 1010, 1 ), out );
+    grouper.Add( count( 1010, 1020, 2 ), out );
+    REQUIRE( out.size() == 1 );
+
+    // Count 3 began at 1020 and is still open.
+    grouper.Tick( 1100, 1020, 3, 3, out );
+    CHECK( out.size() == 1 ); // only held 80 samples so far
+    grouper.Tick( 1120, 1020, 3, 3, out );
+    REQUIRE( out.size() == 2 );
+    CHECK( out[ 1 ].type == SegmentType::Move );
+    CHECK( out[ 1 ].start == 1000 );
+    CHECK( out[ 1 ].end == 1020 );
+    CHECK( out[ 1 ].from_count == 0 );
+    CHECK( out[ 1 ].count == 3 );
+
+    // When the hold finally ends, it passes through as a hold.
+    grouper.Add( count( 1020, 5000, 3 ), out );
+    REQUIRE( out.size() == 3 );
+    CHECK( out[ 2 ].type == SegmentType::Count );
+    CHECK( out[ 2 ].count == 3 );
+}
+
+TEST_CASE( "After a flush, the continuing span stays a hold however short it is" )
+{
+    QuadratureDecoder decoder( DecoderConfig{} );
+    decoder.Start( 0, false, false, false );
+    std::vector<Segment> segments;
+    decoder.Update( 10, true, false, false, segments );  // count 1 from 10
+    decoder.Flush( 5000, segments );                     // waiting for data: show count 1 up to 5000
+    decoder.Update( 5005, true, true, false, segments ); // more data: count 2 at 5005
+    decoder.Flush( 9000, segments );
+
+    REQUIRE( segments.size() == 4 );
+    CHECK( segments[ 1 ].end == 5000 );
+    CHECK_FALSE( segments[ 1 ].continuation );
+    CHECK( segments[ 2 ].start == 5000 );
+    CHECK( segments[ 2 ].end == 5005 );
+    CHECK( segments[ 2 ].count == 1 );
+    CHECK( segments[ 2 ].continuation );
+    CHECK_FALSE( segments[ 3 ].continuation );
+
+    MoveGrouper grouper( 100 );
+    std::vector<Segment> out;
+    for( const Segment& segment : segments )
+        grouper.Add( segment, out );
+    grouper.Flush( out );
+    // Move 0 -> 1 (the short start), hold 1, its 5-sample continuation (still a hold, not a move), hold 2.
+    REQUIRE( out.size() == 4 );
+    CHECK( out[ 0 ].type == SegmentType::Move );
+    for( size_t i = 1; i < out.size(); ++i )
+        CHECK( out[ i ].type == SegmentType::Count );
+    CHECK( out[ 2 ].continuation );
+}
+
 TEST_CASE( "Moves and holds" )
 {
     const double rate = 4e6;

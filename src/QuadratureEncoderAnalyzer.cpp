@@ -29,7 +29,8 @@ namespace
     }
 }
 
-QuadratureEncoderAnalyzer::QuadratureEncoderAnalyzer() : Analyzer2(), mSettings(), mSimulationInitialized( false ), mSampleRateHz( 0 )
+QuadratureEncoderAnalyzer::QuadratureEncoderAnalyzer()
+    : Analyzer2(), mSettings(), mSimulationInitialized( false ), mSampleRateHz( 0 ), mUseZ( false ), mFilled( 0 )
 {
     SetAnalyzerSettings( &mSettings );
     UseFrameV2();
@@ -38,10 +39,14 @@ QuadratureEncoderAnalyzer::QuadratureEncoderAnalyzer() : Analyzer2(), mSettings(
 QuadratureEncoderAnalyzer::~QuadratureEncoderAnalyzer()
 {
     KillThread();
+    mFlusher.Stop();
 }
 
 void QuadratureEncoderAnalyzer::SetupResults()
 {
+    // A previous run's flusher must not touch the results being replaced.
+    mFlusher.Stop();
+
     // SetupResults is called each time the analyzer is run. Because the same instance can be used for multiple runs, we need to clear the
     // results each time.
     mResults.reset( new QuadratureEncoderAnalyzerResults( this, &mSettings ) );
@@ -54,9 +59,9 @@ void QuadratureEncoderAnalyzer::WorkerThread()
     mSampleRateHz = GetSampleRate();
 
     // A, B and (optionally) Z, read together so edges that land on the same sample are seen together.
-    const bool use_z = mSettings.mZ != UNDEFINED_CHANNEL;
+    mUseZ = mSettings.mZ != UNDEFINED_CHANNEL;
     std::vector<AnalyzerChannelData*> channels = { GetAnalyzerChannelData( mSettings.mA ), GetAnalyzerChannelData( mSettings.mB ) };
-    if( use_z )
+    if( mUseZ )
         channels.push_back( GetAnalyzerChannelData( mSettings.mZ ) );
 
     U64 start = 0;
@@ -69,23 +74,27 @@ void QuadratureEncoderAnalyzer::WorkerThread()
         level[ i ] = channels[ i ]->GetBitState() == BIT_HIGH;
     }
 
-    quadrature::QuadratureDecoder decoder( mSettings.MakeDecoderConfig() );
-    decoder.Start( start, level[ 0 ], level[ 1 ], level[ 2 ] );
-
-    std::unique_ptr<quadrature::MoveGrouper> grouper;
-    if( ResultMode( mSettings.mResultMode ) == ResultMode::MovesAndHolds )
-        grouper.reset( new quadrature::MoveGrouper( U64( double( mSettings.mHoldTime ) * 1e-3 * double( mSampleRateHz ) ) ) );
+    {
+        std::lock_guard<std::mutex> lock( mFlusher.Lock() );
+        mDecoder.reset( new quadrature::QuadratureDecoder( mSettings.MakeDecoderConfig() ) );
+        mDecoder->Start( start, level[ 0 ], level[ 1 ], level[ 2 ] );
+        mGrouper.reset();
+        if( ResultMode( mSettings.mResultMode ) == ResultMode::MovesAndHolds )
+            mGrouper.reset( new quadrature::MoveGrouper( U64( double( mSettings.mHoldTime ) * 1e-3 * double( mSampleRateHz ) ) ) );
+        mFilled = start;
+    }
+    mFlusher.Start( [ this ]() { FlushOpen(); }, std::chrono::milliseconds( 100 ), std::chrono::milliseconds( 2000 ) );
 
     // Edges are gathered a chunk at a time from every channel and then replayed in sample order.
     const U64 chunk = std::max<U64>( 1, U64( 1e-3 * double( mSampleRateHz ) ) );
     std::vector<std::pair<U64, int>> edges;
-    std::vector<quadrature::Segment> segments;
-    std::vector<quadrature::Segment> grouped;
     U64 filled = start;
 
     for( ;; )
     {
-        // Advancing blocks until the capture has data that far, which is how a live capture is followed.
+        // Advancing blocks until the capture has data that far, which is how a live capture is
+        // followed, and also how the end of a capture looks: the flusher shows the open span then.
+        mFlusher.Waiting();
         const U64 target = filled + chunk;
         edges.clear();
         for( size_t i = 0; i < channels.size(); ++i )
@@ -99,42 +108,73 @@ void QuadratureEncoderAnalyzer::WorkerThread()
             data->AdvanceToAbsPosition( target );
         }
         filled = target;
+        mFlusher.Progressed();
         std::sort( edges.begin(), edges.end() );
 
-        segments.clear();
+        std::lock_guard<std::mutex> lock( mFlusher.Lock() );
+        mSegments.clear();
         for( size_t i = 0; i < edges.size(); )
         {
             const U64 sample = edges[ i ].first;
             for( ; i < edges.size() && edges[ i ].first == sample; ++i )
                 level[ edges[ i ].second ] = !level[ edges[ i ].second ];
-            decoder.Update( sample, level[ 0 ], level[ 1 ], level[ 2 ], segments );
+            mDecoder->Update( sample, level[ 0 ], level[ 1 ], level[ 2 ], mSegments );
         }
-
-        // Markers go on the channels for every index and error, even those a move absorbs.
-        for( const quadrature::Segment& segment : segments )
+        mFilled = filled;
+        for( const quadrature::Segment& segment : mSegments )
         {
-            if( segment.type == quadrature::SegmentType::Error )
-                mResults->AddMarker( segment.start, AnalyzerResults::ErrorX, mSettings.mA );
-            else if( segment.type == quadrature::SegmentType::Index && use_z )
-                mResults->AddMarker( segment.start, AnalyzerResults::Dot, mSettings.mZ );
+            if( !segment.continuation )
+            {
+                mFlusher.Activity();
+                break;
+            }
         }
-
-        const std::vector<quadrature::Segment>* results = &segments;
-        if( grouper )
-        {
-            grouped.clear();
-            for( const quadrature::Segment& segment : segments )
-                grouper->Add( segment, grouped );
-            results = &grouped;
-        }
-
-        for( const quadrature::Segment& segment : *results )
-            EmitSegment( segment );
-
-        if( !results->empty() )
-            mResults->CommitResults();
+        EmitResults( false );
         ReportProgress( filled );
     }
+}
+
+void QuadratureEncoderAnalyzer::FlushOpen()
+{
+    // Runs on the flusher thread, holding its lock, while the worker waits for data.
+    if( !mDecoder )
+        return;
+    mSegments.clear();
+    mDecoder->Flush( mFilled, mSegments );
+    EmitResults( true );
+}
+
+void QuadratureEncoderAnalyzer::EmitResults( bool flush )
+{
+    // Markers go on the channels for every index and error, even those a move absorbs.
+    for( const quadrature::Segment& segment : mSegments )
+    {
+        if( segment.type == quadrature::SegmentType::Error )
+            mResults->AddMarker( segment.start, AnalyzerResults::ErrorX, mSettings.mA );
+        else if( segment.type == quadrature::SegmentType::Index && mUseZ )
+            mResults->AddMarker( segment.start, AnalyzerResults::Dot, mSettings.mZ );
+    }
+
+    const std::vector<quadrature::Segment>* results = &mSegments;
+    if( mGrouper )
+    {
+        mGrouped.clear();
+        for( const quadrature::Segment& segment : mSegments )
+            mGrouper->Add( segment, mGrouped );
+        // Results that wait in the grouper are emitted as soon as they are known: Logic only takes
+        // late results into its data table while the analyzer is still running.
+        if( flush )
+            mGrouper->Flush( mGrouped );
+        else
+            mGrouper->Tick( mFilled, mDecoder->OpenStart(), mDecoder->Count(), mDecoder->Travel(), mGrouped );
+        results = &mGrouped;
+    }
+
+    for( const quadrature::Segment& segment : *results )
+        EmitSegment( segment );
+
+    if( !results->empty() )
+        mResults->CommitResults();
 }
 
 void QuadratureEncoderAnalyzer::EmitSegment( const quadrature::Segment& segment )

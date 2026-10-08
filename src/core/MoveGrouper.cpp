@@ -26,7 +26,8 @@ namespace quadrature
             return;
         }
 
-        if( segment.end - segment.start >= mHoldSamples )
+        // A continuation (the decoder was flushed mid-span) carries on the hold before it.
+        if( segment.end - segment.start >= mHoldSamples || ( segment.continuation && !mInMove ) )
         {
             // A hold. It ends any move in progress, which arrived at this count.
             if( mInMove )
@@ -57,6 +58,12 @@ namespace quadrature
         mMove.max_count = std::max( mMove.max_count, segment.count );
         mLastCount = segment.count;
         mLastTravel = segment.travel;
+    }
+
+    void MoveGrouper::Tick( uint64_t now, uint64_t open_start, int64_t open_count, int64_t open_travel, std::vector<Segment>& out )
+    {
+        if( mInMove && now >= open_start && now - open_start >= mHoldSamples )
+            EndMove( open_count, open_travel, out );
     }
 
     void MoveGrouper::Flush( std::vector<Segment>& out )

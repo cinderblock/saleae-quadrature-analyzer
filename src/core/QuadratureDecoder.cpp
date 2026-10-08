@@ -82,8 +82,11 @@ namespace quadrature
 
     void QuadratureDecoder::Flush( uint64_t end, std::vector<Segment>& out )
     {
-        CloseOpen( std::max( end, mOpenStart ), 0, out );
-        mOpenStart = std::max( end, mOpenStart );
+        if( end <= mOpenStart )
+            return;
+        CloseOpen( end, 0, out );
+        mOpenStart = end;
+        mOpenIsContinuation = true;
     }
 
     void QuadratureDecoder::CloseOpen( uint64_t end, int64_t delta, std::vector<Segment>& out )
@@ -99,6 +102,8 @@ namespace quadrature
         segment.travel = mTravel;
         segment.delta = delta;
         segment.direction = delta > 0 ? 1 : ( delta < 0 ? -1 : 0 );
+        segment.continuation = mOpenIsContinuation;
+        mOpenIsContinuation = false;
         out.push_back( segment );
     }
 

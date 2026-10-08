@@ -22,6 +22,11 @@ namespace quadrature
         // Feed segments in order; finished segments are appended to `out`.
         void Add( const Segment& segment, std::vector<Segment>& out );
 
+        // Decoding has reached `now` and the current count began at `open_start` (it has not been
+        // emitted yet). Once that count has held for the hold time, a move in progress has ended:
+        // it is emitted now rather than when the hold eventually ends.
+        void Tick( uint64_t now, uint64_t open_start, int64_t open_count, int64_t open_travel, std::vector<Segment>& out );
+
         // Emit whatever is still buffered (end of data).
         void Flush( std::vector<Segment>& out );
 
