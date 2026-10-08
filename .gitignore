@@ -1,0 +1,6 @@
+/build/
+.DS_Store
+/.vscode
+__pycache__/
+# Real captures from the Saleae forum; not ours to redistribute (see README).
+/testdata/
