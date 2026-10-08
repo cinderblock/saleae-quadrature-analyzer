@@ -115,12 +115,12 @@ Each segment also carries **travel**: the cumulative signed count, never reset. 
 - [x] End-of-capture handling: `IdleFlusher` + `Tick` + continuation (`4b0fbbb`). Ported to the stepper (`23efce3`, pushed, CI green).
 - [x] Verified in the isolated Logic UI (screenshot `%TEMP%/salre/quad/ui_6moves.png`).
 - [x] README (`43711e5`); Linux/WSL build and tests pass.
-- [ ] **Current step:** ask the user to publish to GitHub (proposed `cinderblock/saleae-quadrature-analyzer`) and to install, which needs their Logic closed. The stepper's installed copy also needs updating to `23efce3`.
+- [ ] **Current step:** ask the user to publish to GitHub (proposed `cinderblock/saleae-quadrature-analyzer`) and to install, which needs their Logic closed. (The stepper's installed copy was updated to `23efce3` while Logic was closed.)
 
 ## Open questions for the user
 
 1. Publish to GitHub as `cinderblock/saleae-quadrature-analyzer` (public)? Recommended.
-2. Install the quadrature analyzer and update the stepper analyzer in your everyday Logic? Both need Logic closed (you close it; then `tools/install.ps1 -Register` in each repo).
+2. Install the quadrature analyzer into your everyday Logic? It needs Logic closed (it is closed right now), then `tools/install.ps1 -Register`.
 
 ## Things not to do
 
